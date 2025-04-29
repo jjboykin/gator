@@ -21,5 +21,10 @@ WHERE url = $1;
 -- name: GetFeeds :many
 SELECT * FROM feeds;
 
+-- name: GetFeedsWithUserName :many
+SELECT f.name, f.url, u.name as user_name FROM feeds f
+inner join users u on u.id = f.user_id
+;
+
 -- name: DeleteFeeds :exec
 DELETE FROM feeds;

@@ -84,9 +84,9 @@ func main() {
 		commandHandler: make(map[string]func(*state, command) error),
 	}
 
-	// Register the login handler
 	cliCommands.register("addfeed", handlerAddFeed)
 	cliCommands.register("agg", handlerAggregator)
+	cliCommands.register("feeds", handlerFeeds)
 	cliCommands.register("login", handlerLogin)
 	cliCommands.register("register", handlerRegister)
 	cliCommands.register("reset", handlerReset)
@@ -110,9 +110,6 @@ func main() {
 		fmt.Println("Error:", err)
 		os.Exit(1)
 	}
-
-	fmt.Printf("DB URL: %v\n", cfg.DBUrl)
-	fmt.Printf("Username: %v\n", cfg.CurrentUserName)
 
 }
 
@@ -163,6 +160,23 @@ func handlerAggregator(s *state, cmd command) error {
 		return err
 	}
 	fmt.Println(*feed)
+
+	return nil
+}
+
+func handlerFeeds(s *state, cmd command) error {
+	if len(cmd.args) != 0 {
+		return errors.New("too many command args given")
+	}
+
+	feeds, err := s.db.GetFeedsWithUserName(context.Background())
+	if err != nil {
+		fmt.Println("Error:", err)
+	}
+
+	for _, feed := range feeds {
+		fmt.Println(feed.Name, feed.Url, feed.UserName)
+	}
 
 	return nil
 }
