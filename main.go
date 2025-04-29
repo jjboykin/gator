@@ -85,6 +85,7 @@ func main() {
 	}
 
 	// Register the login handler
+	cliCommands.register("addfeed", handlerAddFeed)
 	cliCommands.register("agg", handlerAggregator)
 	cliCommands.register("login", handlerLogin)
 	cliCommands.register("register", handlerRegister)
@@ -115,6 +116,41 @@ func main() {
 
 }
 
+func handlerAddFeed(s *state, cmd command) error {
+	if len(cmd.args) == 0 {
+		return errors.New("no command args given")
+	}
+
+	if len(cmd.args) != 2 {
+		return errors.New("incorrect number of command args given")
+	}
+
+	user, err := s.db.GetUserByName(context.Background(), s.configPtr.CurrentUserName)
+	if err != nil {
+		fmt.Println("Error:", err)
+	}
+
+	name := cmd.args[0]
+	url := cmd.args[1]
+
+	feedParams := database.CreateFeedParams{
+		ID:        uuid.New(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Name:      name,
+		Url:       url,
+		UserID:    user.ID,
+	}
+	feed, err := s.db.CreateFeed(context.Background(), feedParams)
+	if err != nil {
+		fmt.Println("Error:", err)
+	}
+
+	fmt.Println(feed.ID, feed.CreatedAt, feed.UpdatedAt, feed.Name, feed.Url, feed.UserID)
+
+	return nil
+}
+
 func handlerAggregator(s *state, cmd command) error {
 	if len(cmd.args) != 0 {
 		return errors.New("too many command args given")
@@ -140,7 +176,6 @@ func handlerLogin(s *state, cmd command) error {
 		return errors.New("too many command args given")
 	}
 
-	// Ensure that a name was passed in the args.
 	name := cmd.args[0]
 
 	user, err := s.db.GetUserByName(context.Background(), name)
