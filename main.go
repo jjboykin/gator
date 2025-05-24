@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -84,12 +85,17 @@ func main() {
 		commandHandler: make(map[string]func(*state, command) error),
 	}
 
-	cliCommands.register("addfeed", handlerAddFeed)
+	//cliCommands.register("addfeed", handlerAddFeed)
+	cliCommands.register("addfeed", middlewareLoggedIn(handlerAddFeed))
 	cliCommands.register("agg", handlerAggregator)
+	cliCommands.register("browse", middlewareLoggedIn(handlerBrowse))
 	cliCommands.register("feeds", handlerFeeds)
+	cliCommands.register("follow", middlewareLoggedIn(handlerFollow))
+	cliCommands.register("following", middlewareLoggedIn(handlerFollowing))
 	cliCommands.register("login", handlerLogin)
 	cliCommands.register("register", handlerRegister)
 	cliCommands.register("reset", handlerReset)
+	cliCommands.register("unfollow", middlewareLoggedIn(handlerUnfollow))
 	cliCommands.register("users", handlerUsers)
 
 	// Check if we have enough arguments
@@ -113,18 +119,14 @@ func main() {
 
 }
 
-func handlerAddFeed(s *state, cmd command) error {
+// Handlers
+func handlerAddFeed(s *state, cmd command, user database.User) error {
 	if len(cmd.args) == 0 {
 		return errors.New("no command args given")
 	}
 
 	if len(cmd.args) != 2 {
 		return errors.New("incorrect number of command args given")
-	}
-
-	user, err := s.db.GetUserByName(context.Background(), s.configPtr.CurrentUserName)
-	if err != nil {
-		fmt.Println("Error:", err)
 	}
 
 	name := cmd.args[0]
@@ -143,24 +145,76 @@ func handlerAddFeed(s *state, cmd command) error {
 		fmt.Println("Error:", err)
 	}
 
-	fmt.Println(feed.ID, feed.CreatedAt, feed.UpdatedAt, feed.Name, feed.Url, feed.UserID)
+	feedFollowParams := database.CreateFeedFollowParams{
+		ID:        uuid.New(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		UserID:    user.ID,
+		FeedID:    feed.ID,
+	}
+
+	follow, err := s.db.CreateFeedFollow(context.Background(), feedFollowParams)
+	if err != nil {
+		fmt.Println("Error:", err)
+	}
+
+	fmt.Println("Feed: ", feed.ID, feed.CreatedAt, feed.UpdatedAt, feed.Name, feed.Url, feed.UserID)
+	fmt.Println("Follow: ", follow.ID, follow.CreatedAt, follow.UpdatedAt, follow.FeedName, follow.UserName)
 
 	return nil
 }
 
 func handlerAggregator(s *state, cmd command) error {
-	if len(cmd.args) != 0 {
+	if len(cmd.args) == 0 {
+		return errors.New("time_between_reqs not given")
+	}
+
+	if len(cmd.args) > 1 {
 		return errors.New("too many command args given")
 	}
 
-	feedURL := "https://www.wagslane.dev/index.xml"
-
-	feed, err := fetchFeed(context.Background(), feedURL)
+	time_between_reqs := cmd.args[0]
+	timeBetweenRequests, err := time.ParseDuration(time_between_reqs)
 	if err != nil {
 		return err
 	}
-	fmt.Println(*feed)
 
+	fmt.Printf("Collecting feeds every %s\n", timeBetweenRequests)
+	ticker := time.NewTicker(timeBetweenRequests)
+	for ; ; <-ticker.C {
+		scrapeFeeds(s)
+	}
+}
+
+func handlerBrowse(s *state, cmd command, user database.User) error {
+	limit := 2
+
+	if len(cmd.args) > 0 {
+		limitArg, err := strconv.Atoi(cmd.args[0])
+		if err != nil {
+			fmt.Println("Error:", err)
+			return err
+		}
+		limit = limitArg
+	}
+
+	userParams := database.GetPostsForUserParams{
+		ID:    user.ID,
+		Limit: int32(limit),
+	}
+
+	posts, err := s.db.GetPostsForUser(context.Background(), userParams)
+	if err != nil {
+		return fmt.Errorf("couldn't get posts for user: %w", err)
+	}
+
+	for _, post := range posts {
+		fmt.Printf("%s from %s\n", post.PublishedAt, post.FeedName)
+		fmt.Printf("--- %s ---\n", post.Title)
+		fmt.Printf("    %v\n", post.Description.String)
+		fmt.Printf("Link: %s\n", post.Url)
+		fmt.Println("==================================================")
+	}
 	return nil
 }
 
@@ -176,6 +230,58 @@ func handlerFeeds(s *state, cmd command) error {
 
 	for _, feed := range feeds {
 		fmt.Println(feed.Name, feed.Url, feed.UserName)
+	}
+
+	return nil
+}
+
+func handlerFollow(s *state, cmd command, user database.User) error {
+	if len(cmd.args) == 0 {
+		return errors.New("no command args given")
+	}
+
+	if len(cmd.args) != 1 {
+		return errors.New("too many command args given")
+	}
+
+	url := cmd.args[0]
+
+	feed, err := s.db.GetFeedByURL(context.Background(), url)
+	if err != nil {
+		fmt.Println("Error:", err)
+	}
+
+	feedFollowParams := database.CreateFeedFollowParams{
+		ID:        uuid.New(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		UserID:    user.ID,
+		FeedID:    feed.ID,
+	}
+
+	follow, err := s.db.CreateFeedFollow(context.Background(), feedFollowParams)
+	if err != nil {
+		fmt.Println("Error:", err)
+	}
+
+	fmt.Println(follow.FeedName)
+	fmt.Println(follow.UserName)
+
+	return nil
+}
+
+func handlerFollowing(s *state, cmd command, user database.User) error {
+	if len(cmd.args) != 0 {
+		return errors.New("too many command args given")
+	}
+
+	follows, err := s.db.GetFeedFollowsForUser(context.Background(), s.configPtr.CurrentUserName)
+	if err != nil {
+		fmt.Println("Error:", err)
+	}
+
+	for _, follow := range follows {
+		fmt.Println(follow.FeedName)
 	}
 
 	return nil
@@ -280,6 +386,47 @@ func handlerUsers(s *state, cmd command) error {
 	return nil
 }
 
+func handlerUnfollow(s *state, cmd command, user database.User) error {
+	if len(cmd.args) == 0 {
+		return errors.New("no command args given")
+	}
+
+	if len(cmd.args) != 1 {
+		return errors.New("too many command args given")
+	}
+
+	url := cmd.args[0]
+
+	feed, err := s.db.GetFeedByURL(context.Background(), url)
+	if err != nil {
+		fmt.Println("Error:", err)
+	}
+
+	feedFollowParams := database.DeleteFeedFollowParams{
+		UserID: user.ID,
+		FeedID: feed.ID,
+	}
+
+	err = s.db.DeleteFeedFollow(context.Background(), feedFollowParams)
+	if err != nil {
+		fmt.Println("Error:", err)
+	}
+
+	return nil
+}
+
+// Middleware
+func middlewareLoggedIn(handler func(s *state, cmd command, user database.User) error) func(*state, command) error {
+	return func(s *state, cmd command) error {
+		user, err := s.db.GetUserByName(context.Background(), s.configPtr.CurrentUserName)
+		if err != nil {
+			return err
+		}
+		return handler(s, cmd, user)
+	}
+}
+
+// Other functions
 func fetchFeed(ctx context.Context, feedURL string) (*RSSFeed, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", feedURL, nil)
 	if err != nil {
@@ -317,4 +464,87 @@ func fetchFeed(ctx context.Context, feedURL string) (*RSSFeed, error) {
 	feed.Channel.Description = html.UnescapeString(feed.Channel.Description)
 
 	return feed, nil
+}
+
+func scrapeFeeds(s *state) error {
+
+	feed, err := s.db.GetNextFeedToFetch(context.Background())
+	if err != nil {
+		return err
+	}
+
+	nullableTimeSQL := sql.NullTime{
+		Time:  time.Now(),
+		Valid: true,
+	}
+
+	feedToMarkParams := database.MarkFeedFetchedParams{
+		ID:            feed.ID,
+		LastFetchedAt: nullableTimeSQL,
+		UpdatedAt:     nullableTimeSQL.Time,
+	}
+
+	err = s.db.MarkFeedFetched(context.Background(), feedToMarkParams)
+	if err != nil {
+		return err
+	}
+
+	fetchedFeed, err := fetchFeed(context.Background(), feed.Url)
+	if err != nil {
+		return err
+	}
+
+	//fmt.Printf("Feed Title: %s\n", fetchedFeed.Channel.Title)
+	//fmt.Printf("Feed Description: %s\n", fetchedFeed.Channel.Description)
+	//fmt.Println("Feed Items: ")
+	for _, item := range fetchedFeed.Channel.Item {
+
+		nullableStringDescription := sql.NullString{
+			String: item.Description,
+			Valid:  true,
+		}
+
+		timeFormats := []string{
+			"2006-01-02 15:04:05",
+			"2006/01/02",
+			"02 Jan 2006",
+			"01/02/2006 15:04:05 MST",
+			time.RFC3339,
+		}
+
+		var parsedPubDate time.Time
+
+		for _, layout := range timeFormats {
+			parsedTime, err := time.Parse(layout, item.PubDate)
+
+			if err != nil {
+				//fmt.Println("Error parsing date:", err)
+				continue
+			} else {
+				parsedPubDate = parsedTime
+				break
+			}
+		}
+
+		postParams := database.CreatePostParams{
+			ID:          uuid.New(),
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+			Title:       item.Title,
+			Url:         item.Link,
+			Description: nullableStringDescription,
+			PublishedAt: parsedPubDate,
+			FeedID:      feed.ID,
+		}
+
+		post, err := s.db.CreatePost(context.Background(), postParams)
+		if err != nil {
+			fmt.Println("Error:", err)
+		}
+
+		fmt.Printf("Post '%s' created as id=%s\n", post.Title, post.ID)
+
+	}
+
+	return nil
 }
